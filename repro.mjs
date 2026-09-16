@@ -30,13 +30,13 @@ let publishedTotal = 0;
 let largestChunk = { bytes: 0, label: "-" };
 
 // Describe a chunk by its nesting depth and the payload it carries.
-const describe = (chunk) => {
+const describe = (chunk, fallback = "?") => {
   let cur = chunk, depth = 0;
   while (cur?.type === "tool-output" && depth < 8) { cur = cur.payload?.output; depth++; }
   const msgs = cur?.payload?.messages?.all?.length ?? 0;
   const steps = cur?.payload?.output?.steps?.length ?? 0;
   const carries = msgs || steps ? ` [messages.all=${msgs} steps=${steps}]` : "";
-  return `${"tool-output>".repeat(depth)}${cur?.type ?? "?"}${carries}`;
+  return `${"tool-output>".repeat(depth)}${cur?.type ?? fallback}${carries}`;
 };
 
 class MeasuringPubSub extends EventEmitterPubSub {
@@ -46,7 +46,7 @@ class MeasuringPubSub extends EventEmitterPubSub {
     const topicKey = topic.replace(/[0-9a-f-]{36}/gi, "<id>");
     byTopic.set(topicKey, (byTopic.get(topicKey) ?? 0) + bytes);
     if (event?.data?.type || event?.type === "finish") {
-      const label = describe(event.data ?? event);
+      const label = describe(event.data ?? event, event?.type ?? "unknown");
       const prev = byKind.get(label) ?? { n: 0, bytes: 0 };
       byKind.set(label, { n: prev.n + 1, bytes: prev.bytes + bytes });
       if (bytes > largestChunk.bytes) largestChunk = { bytes, label };
@@ -184,4 +184,3 @@ for (const [k, v] of [...byKind].sort((a, b) => b[1].bytes - a[1].bytes).slice(0
 
 console.log(`\nlargest single chunk   ${pad(largestChunk.bytes)} B  = ${(largestChunk.bytes / realToolBytes).toFixed(1)}x the whole run's real tool payload`);
 console.log(`  ${largestChunk.label}\n`);
-process.exit(0);
