@@ -27,10 +27,10 @@ Same 30,372 B of real tool payload in every row. Only the chain depth changes.
 
 | depth | published to pubsub | × real payload |
 | --- | --- | --- |
-| 1 (no delegation) | 134,036 B | ×4.4 |
-| 2 | 693,628 B | ×22.8 |
-| 3 | 1,053,861 B | ×34.7 |
-| 4 | 1,418,929 B | ×46.7 |
+| 1 (no delegation) | 134,113 B | ×4.4 |
+| 2 | 693,667 B | ×22.8 |
+| 3 | 1,053,900 B | ×34.7 |
+| 4 | 1,418,968 B | ×46.7 |
 
 At depth 3 the largest single published chunk is **160,381 B — 5.3× the entire run's real tool
 payload, in one chunk.**
@@ -56,4 +56,6 @@ depth and step count rather than one copy per level.
 the thread-stream broadcast and it returns early for `tool-output`, so none of the chunks above are
 covered.
 
-Set `DEPTH=1` to see the floor: without delegation the same work publishes 134,036 B.
+Set `DEPTH=1` to see the floor: without delegation the same work publishes 134,113 B.
+
+Measured on `@mastra/core@1.67.0`, Node 24. 1.65.0 gives the same figures within ~80 bytes.
