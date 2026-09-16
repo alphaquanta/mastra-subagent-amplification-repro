@@ -4,11 +4,16 @@
 count the bytes each `publish()` would write to a real broker.
 
 ```bash
-pnpm install
-node repro.mjs            # 3 levels (the default)
+npm i
+npm run repro             # 3 levels (the default)
+npm run sweep             # depths 1..4 in one table
 DEPTH=1 node repro.mjs    # baseline, no delegation
 TOOL_CHARS=40000 node repro.mjs
 ```
+
+Everything is stock `@mastra/core`: `EventEmitterPubSub`, `InMemoryServerCache`,
+`MockLanguageModelV3`, plain `Agent` instances. No third-party transport, no custom wrapper, no
+application code.
 
 ## What it builds
 
