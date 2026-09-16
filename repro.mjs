@@ -14,7 +14,10 @@ import { EventEmitterPubSub } from "@mastra/core/events";
 import { InMemoryServerCache } from "@mastra/core/cache";
 import { Mastra } from "@mastra/core/mastra";
 import { createTool } from "@mastra/core/tools";
+import { InMemoryStore } from "@mastra/core/storage";
+import { Memory } from "@mastra/memory";
 import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 const DEPTH = Number(process.env.DEPTH ?? 3);          // 1 = no delegation
@@ -26,6 +29,9 @@ const TOOL_CALLS = Number(process.env.TOOL_CALLS ?? 3); // tool calls made by th
 let realToolBytes = 0;
 const byTopic = new Map();
 const byKind = new Map();
+// Same chunk kinds, but split by which topic family they were published to, so the
+// thread-stream broadcast (the path sanitizeBroadcastPart covers) can be read on its own.
+const byFamily = { "thread-stream broadcast": new Map(), "run stream": new Map() };
 let publishedTotal = 0;
 let largestChunk = { bytes: 0, label: "-" };
 
@@ -45,10 +51,20 @@ class MeasuringPubSub extends EventEmitterPubSub {
     publishedTotal += bytes;
     const topicKey = topic.replace(/[0-9a-f-]{36}/gi, "<id>");
     byTopic.set(topicKey, (byTopic.get(topicKey) ?? 0) + bytes);
-    if (event?.data?.type || event?.type === "finish") {
-      const label = describe(event.data ?? event, event?.type ?? "unknown");
+    // run stream publishes { type, data: <chunk> }; the thread-stream broadcast wraps the
+    // chunk one level deeper, as a "stream-part" envelope carrying it under .part.
+    let chunk = event?.data ?? event;
+    if (chunk?.type === "stream-part") chunk = chunk.part ?? chunk;
+    if (chunk?.type || event?.type === "finish") {
+      const label = describe(chunk ?? event, event?.type ?? "unknown");
       const prev = byKind.get(label) ?? { n: 0, bytes: 0 };
       byKind.set(label, { n: prev.n + 1, bytes: prev.bytes + bytes });
+      const family = topic.includes("thread-stream") ? "thread-stream broadcast" : "run stream";
+      const fam = byFamily[family];
+      if (fam) {
+        const fp = fam.get(label) ?? { n: 0, bytes: 0 };
+        fam.set(label, { n: fp.n + 1, bytes: fp.bytes + bytes });
+      }
       if (bytes > largestChunk.bytes) largestChunk = { bytes, label };
     }
     return super.publish(topic, event, options);
@@ -135,6 +151,7 @@ let child = new Agent({
   model: scriptedModel(leafScript),
   defaultOptions: { maxSteps: 12 },
   tools: { search: searchTool },
+  ...(DEPTH === 1 ? { memory: new Memory({ storage: new InMemoryStore(), options: { generateTitle: false } }) } : {}),
 });
 
 // Each level above delegates to the level below. Sub-agents are plain Agent instances,
@@ -152,6 +169,8 @@ for (let level = DEPTH - 1; level >= 1; level--) {
     ]),
     defaultOptions: { maxSteps: 12 },
     agents: () => ({ [childKey]: childRef }),
+    // The entry agent needs memory for the thread-stream broadcast to run at all.
+    ...(level === 1 ? { memory: new Memory({ storage: new InMemoryStore(), options: { generateTitle: false } }) } : {}),
   });
 }
 
@@ -160,7 +179,11 @@ const entry = mastra.getAgent(`level-1`);
 await mastra.startWorkers();
 
 let clientBytes = 0, clientChunks = 0;
-const run = await entry.stream("Start the job.", { maxSteps: 12 });
+const threadId = randomUUID();
+const run = await entry.stream("Start the job.", {
+  maxSteps: 12,
+  memory: { thread: threadId, resource: "repro-user" },
+});
 for await (const chunk of run.output.fullStream) {
   clientBytes += Buffer.byteLength(JSON.stringify(chunk));
   clientChunks++;
@@ -180,6 +203,29 @@ for (const [t, b] of [...byTopic].sort((a, b2) => b2[1] - a[1])) console.log(`  
 console.log(`\nby chunk kind (tool-output> prefix = one delegation level):`);
 for (const [k, v] of [...byKind].sort((a, b) => b[1].bytes - a[1].bytes).slice(0, 12)) {
   console.log(`  ${pad(v.bytes)} B  n=${String(v.n).padStart(3)}  ${k}`);
+}
+
+for (const [family, map] of Object.entries(byFamily)) {
+  const rows = [...map].filter(([k]) => /step-finish|finish/.test(k)).sort((a, b) => b[1].bytes - a[1].bytes);
+  if (!rows.length) continue;
+  console.log(`\n${family} — step-finish / finish parts only:`);
+  for (const [k, v] of rows.slice(0, 20)) console.log(`  ${pad(v.bytes)} B  n=${String(v.n).padStart(3)}  ${k}`);
+}
+
+// The headline: on the ONE topic sanitizeBroadcastPart is applied to, compare a top-level
+// step-finish (sanitised) against a nested one (not sanitised).
+{
+  const fam = byFamily["thread-stream broadcast"];
+  const flat = [...fam].filter(([k]) => /^step-finish/.test(k));
+  const nested = [...fam].filter(([k]) => /^tool-output.*step-finish/.test(k)).sort((a, b) => b[1].bytes - a[1].bytes)[0];
+  if (flat.length && nested) {
+    const flatN = flat.reduce((n, [, v]) => n + v.n, 0);
+    const flatB = flat.reduce((n, [, v]) => n + v.bytes, 0);
+    console.log(`\nsanitizeBroadcastPart is applied to this topic. Same topic, same chunk type:`);
+    console.log(`  top-level step-finish  n=${String(flatN).padStart(3)}  avg ${pad(Math.round(flatB / flatN))} B   sanitised (no messages, no output.steps)`);
+    console.log(`  nested    step-finish  n=${String(nested[1].n).padStart(3)}      ${pad(nested[1].bytes)} B   NOT sanitised — ${nested[0].match(/\[.*\]/)?.[0] ?? ""}`);
+    console.log(`  ratio                                  x${(nested[1].bytes / (flatB / flatN)).toFixed(0)}`);
+  }
 }
 
 console.log(`\nlargest single chunk   ${pad(largestChunk.bytes)} B  = ${(largestChunk.bytes / realToolBytes).toFixed(1)}x the whole run's real tool payload`);

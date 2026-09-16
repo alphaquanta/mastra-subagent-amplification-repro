@@ -27,22 +27,26 @@ Same 30,372 B of real tool payload in every row. Only the chain depth changes.
 
 | depth | published to pubsub | × real payload |
 | --- | --- | --- |
-| 1 (no delegation) | 134,113 B | ×4.4 |
-| 2 | 693,667 B | ×22.8 |
-| 3 | 1,053,900 B | ×34.7 |
-| 4 | 1,418,968 B | ×46.7 |
+| 1 (no delegation) | 205,805 B | ×6.8 |
+| 2 | 1,369,140 B | ×45.1 |
+| 3 | 2,695,194 B | ×88.7 |
+| 4 | 4,396,498 B | ×144.8 |
 
-At depth 3 the largest single published chunk is **160,381 B — 5.3× the entire run's real tool
-payload, in one chunk.**
+### The sanitizer gap, on the one topic it is applied to
+
+`sanitizeBroadcastPart` runs on the thread-stream broadcast. On that same topic, for the same
+chunk type, a top-level part is stripped and a nested one is not:
 
 ```
-by chunk kind (tool-output> prefix = one delegation level):
-   160381 B  n=  1  tool-output>tool-output>step-finish [messages.all=9 steps=4]
-   160376 B  n=  1  tool-output>tool-output>finish      [messages.all=9 steps=4]
-   128008 B  n=  1  tool-output>step-finish             [messages.all=4 steps=2]
-   118082 B  n=  1  tool-output>tool-output>step-finish [messages.all=8 steps=3]
-    65534 B  n=  1  tool-output>tool-output>step-finish [messages.all=6 steps=2]
+sanitizeBroadcastPart is applied to this topic. Same topic, same chunk type:
+  top-level step-finish  n=  8  avg        4933 B   sanitised (no messages, no output.steps)
+  nested    step-finish  n=  1           160470 B   NOT sanitised — [messages.all=9 steps=4]
+  ratio                                  x33
 ```
+
+A forwarded sub-agent chunk arrives as `{ type: "tool-output", payload: { output: <chunk> } }`.
+`sanitizeBroadcastPart` matches on the outer `type`, sees `tool-output`, and returns the part
+untouched — once per delegation level.
 
 ## What the output shows
 

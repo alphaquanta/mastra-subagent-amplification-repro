@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@mastra/core": "1.67.0",
+    "@mastra/memory": "1.30.0",
     "ai": "6.0.283",
     "zod": "3.25.76"
   }
