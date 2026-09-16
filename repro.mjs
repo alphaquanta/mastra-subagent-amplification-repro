@@ -34,6 +34,9 @@ const byKind = new Map();
 const byFamily = { "thread-stream broadcast": new Map(), "run stream": new Map() };
 let publishedTotal = 0;
 let largestChunk = { bytes: 0, label: "-" };
+// Re-wrapping: the same innermost chunk is published again at each level, inside one more
+// tool-output envelope. Key by the innermost chunk's own JSON to count the repeats.
+const byInner = new Map();
 
 // Describe a chunk by its nesting depth and the payload it carries.
 const describe = (chunk, fallback = "?") => {
@@ -66,6 +69,16 @@ class MeasuringPubSub extends EventEmitterPubSub {
         fam.set(label, { n: fp.n + 1, bytes: fp.bytes + bytes });
       }
       if (bytes > largestChunk.bytes) largestChunk = { bytes, label };
+      let inner = chunk, d = 0;
+      while (inner?.type === "tool-output" && d < 8) { inner = inner.payload?.output; d++; }
+      if (inner) {
+        const key = JSON.stringify(inner);
+        const fam = topic.includes("thread-stream") ? "broadcast" : "run";
+        const e = byInner.get(key) ?? { n: 0, bytes: 0, innerBytes: Buffer.byteLength(key), type: inner.type, fams: new Set(), perFam: {} };
+        e.n += 1; e.bytes += bytes; e.fams.add(fam);
+        e.perFam[fam] = (e.perFam[fam] ?? 0) + 1;
+        byInner.set(key, e);
+      }
     }
     return super.publish(topic, event, options);
   }
@@ -226,6 +239,21 @@ for (const [family, map] of Object.entries(byFamily)) {
     console.log(`  nested    step-finish  n=${String(nested[1].n).padStart(3)}      ${pad(nested[1].bytes)} B   NOT sanitised — ${nested[0].match(/\[.*\]/)?.[0] ?? ""}`);
     console.log(`  ratio                                  x${(nested[1].bytes / (flatB / flatN)).toFixed(0)}`);
   }
+}
+
+{
+  const rows = [...byInner.values()];
+  const published = rows.reduce((n, r) => n + r.bytes, 0);
+  const distinct = rows.reduce((n, r) => n + r.innerBytes, 0);
+  // Repeats WITHIN one topic family are re-wrapping: the same chunk published again inside
+  // one more tool-output envelope. Repeats ACROSS families are the run-stream/broadcast fan-out.
+  const depthRepeats = rows.filter((r) => Math.max(...Object.values(r.perFam)) > 1);
+  const maxPerFam = Math.max(0, ...rows.map((r) => Math.max(...Object.values(r.perFam))));
+  console.log(`\nre-wrapping — the same innermost chunk republished inside one more tool-output envelope:`);
+  console.log(`  distinct innermost chunks        ${String(rows.length).padStart(4)}, ${pad(distinct)} B if each were published once`);
+  console.log(`  actually published               ${String(rows.reduce((n, r) => n + r.n, 0)).padStart(4)} times, ${pad(published)} B`);
+  console.log(`  republished within one topic     ${String(depthRepeats.length).padStart(4)} chunks, up to x${maxPerFam} each  <- re-wrapping`);
+  console.log(`  total cost of every repeat       ${pad(published - distinct)} B  (${((published - distinct) / published * 100).toFixed(0)}% of everything published)`);
 }
 
 console.log(`\nlargest single chunk   ${pad(largestChunk.bytes)} B  = ${(largestChunk.bytes / realToolBytes).toFixed(1)}x the whole run's real tool payload`);

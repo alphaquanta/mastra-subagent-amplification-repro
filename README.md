@@ -48,6 +48,27 @@ A forwarded sub-agent chunk arrives as `{ type: "tool-output", payload: { output
 `sanitizeBroadcastPart` matches on the outer `type`, sees `tool-output`, and returns the part
 untouched — once per delegation level.
 
+### Re-wrapping: the same chunk published once per level
+
+Wrapping is not free relabelling — each level publishes the whole nested structure again inside
+one more envelope, so the same bytes are re-serialised per level:
+
+```
+re-wrapping — the same innermost chunk republished inside one more tool-output envelope:
+  distinct innermost chunks          65,     1050259 B if each were published once
+  actually published                136 times,     2662859 B
+  republished within one topic       25 chunks, up to x3 each  <- re-wrapping
+  total cost of every repeat           1612600 B  (61% of everything published)
+```
+
+"Republished within one topic" counts only repeats on the same topic, so it is re-wrapping by
+depth rather than the run-stream/broadcast fan-out. `x3` in a three-level chain is one publish
+per level.
+
+The two costs are separable. Publishing each distinct chunk once would still be 1,050,259 B for
+30,372 B of tool payload (×34.6) because the payloads themselves are fat; the repeats then take
+it to 2,662,859 B.
+
 ## What the output shows
 
 `messages.all` and `output.steps` are cumulative, so a chunk grows with the step count and every
